@@ -30,7 +30,11 @@ export default function Admin() {
   const [transferringOrder, setTransferringOrder] = useState(null)
   const [transferTargetTableId, setTransferTargetTableId] = useState('')
 
+  const [editingNoteOrder, setEditingNoteOrder] = useState(null)
+  const [editedOrderNote, setEditedOrderNote] = useState('')
+
   const categories = ['Todos', 'Bebidas', 'Platos', 'Postres', 'Otros']
+  const menuCategories = categories.slice(1)
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth <= 768)
@@ -57,7 +61,7 @@ export default function Admin() {
   }
 
   const fetchOrders = async (tableId) => {
-    const { data } = await supabase.from('orders').select('*').eq('table_id', tableId)
+    const { data } = await supabase.from('orders').select('*').eq('table_id', tableId).order('id', { ascending: true })
     setOrders(data || [])
   }
 
@@ -69,6 +73,16 @@ export default function Admin() {
   const fetchHistory = async () => {
     const { data } = await supabase.from('sales_history').select('*').order('created_at', { ascending: false })
     setHistory(data || [])
+  }
+
+  const refreshTablesAndOrders = async (tableId = selectedTable?.id) => {
+    const tasks = [fetchTables(), fetchAllOrders()]
+    if (tableId) tasks.push(fetchOrders(tableId))
+    await Promise.all(tasks)
+  }
+
+  const refreshMenu = async () => {
+    await fetchProducts()
   }
 
   const syncTableStatus = async (tableId) => {
@@ -85,7 +99,7 @@ export default function Admin() {
       product_name: product.name,
       price: Number(product.price),
       quantity: 1,
-      notes: orderNote.trim()
+      notes: orderNote.trim() || null
     }])
 
     if (error) return alert(error.message)
@@ -93,9 +107,54 @@ export default function Admin() {
     await supabase.from('tables').update({ status: 'busy' }).eq('id', selectedTable.id)
 
     setOrderNote('')
-    await fetchOrders(selectedTable.id)
-    await fetchTables()
-    await fetchAllOrders()
+    await refreshTablesAndOrders(selectedTable.id)
+  }
+
+  const changeOrderQuantity = async (order, delta) => {
+    const currentQty = Number(order.quantity || 1)
+    const nextQty = currentQty + delta
+
+    if (nextQty <= 0) {
+      const { error } = await supabase.from('orders').delete().eq('id', order.id)
+      if (error) return alert(error.message)
+    } else {
+      const { error } = await supabase.from('orders').update({ quantity: nextQty }).eq('id', order.id)
+      if (error) return alert(error.message)
+    }
+
+    await syncTableStatus(order.table_id)
+    await refreshTablesAndOrders(selectedTable?.id || order.table_id)
+  }
+
+  const openNoteEditor = (order) => {
+    setEditingNoteOrder(order)
+    setEditedOrderNote(order.notes || '')
+  }
+
+  const saveOrderNote = async () => {
+    if (!editingNoteOrder) return
+
+    const { error } = await supabase
+      .from('orders')
+      .update({ notes: editedOrderNote.trim() || null })
+      .eq('id', editingNoteOrder.id)
+
+    if (error) return alert(error.message)
+
+    setEditingNoteOrder(null)
+    setEditedOrderNote('')
+    await refreshTablesAndOrders(selectedTable?.id || editingNoteOrder.table_id)
+  }
+
+  const deleteOrderNote = async (order) => {
+    const { error } = await supabase
+      .from('orders')
+      .update({ notes: null })
+      .eq('id', order.id)
+
+    if (error) return alert(error.message)
+
+    await refreshTablesAndOrders(selectedTable?.id || order.table_id)
   }
 
   const handleAddTable = async () => {
@@ -121,13 +180,13 @@ export default function Admin() {
     if (error) return alert(error.message)
 
     setNewProd({ name: '', price: '', category: 'Bebidas' })
-    await fetchProducts()
+    await refreshMenu()
   }
 
   const deleteProduct = async (id) => {
     const { error } = await supabase.from('products').delete().eq('id', id)
     if (error) return alert(error.message)
-    await fetchProducts()
+    await refreshMenu()
   }
 
   const startEditPrice = (product) => {
@@ -141,7 +200,7 @@ export default function Admin() {
 
     setEditingProductId(null)
     setEditedPrice('')
-    await fetchProducts()
+    await refreshMenu()
   }
 
   const cancelEditPrice = () => {
@@ -169,9 +228,7 @@ export default function Admin() {
     setIsCobrando(false)
     setSelectedTable(null)
 
-    await fetchTables()
-    await fetchAllOrders()
-    await fetchHistory()
+    await Promise.all([fetchTables(), fetchAllOrders(), fetchHistory()])
   }
 
   const openTransferModal = (order) => {
@@ -194,12 +251,7 @@ export default function Admin() {
 
     await syncTableStatus(sourceTableId)
     await syncTableStatus(Number(transferTargetTableId))
-
-    if (selectedTable && selectedTable.id === sourceTableId) {
-      await fetchOrders(sourceTableId)
-    }
-    await fetchAllOrders()
-    await fetchTables()
+    await refreshTablesAndOrders(selectedTable?.id || sourceTableId)
 
     setTransferringOrder(null)
     setTransferTargetTableId('')
@@ -210,6 +262,8 @@ export default function Admin() {
   const mainStyle = isMobile ? s.mainMobile : s.main
   const pageStyle = isMobile ? s.pageMobile : s.page
   const orderContainerStyle = isMobile ? s.responsiveOrderContainerMobile : s.responsiveOrderContainer
+  const gridStyle = isMobile ? s.gridMobile : s.grid
+  const productGridStyle = isMobile ? s.productGridMobile : s.productGrid
 
   return (
     <div style={pageStyle}>
@@ -256,6 +310,26 @@ export default function Admin() {
         </div>
       )}
 
+      {editingNoteOrder && (
+        <div style={s.modalOverlay}>
+          <div style={s.modal}>
+            <h2>Editar observación</h2>
+            <p><strong>{editingNoteOrder.product_name}</strong></p>
+            <textarea
+              rows={4}
+              style={{ ...s.input, resize: 'vertical' }}
+              value={editedOrderNote}
+              onChange={(e) => setEditedOrderNote(e.target.value)}
+              placeholder="Escribe la observación"
+            />
+            <div style={{ display: 'flex', gap: '10px', marginTop: '20px', justifyContent: 'center', flexWrap: 'wrap' }}>
+              <button onClick={() => setEditingNoteOrder(null)} style={s.btnSmall}>Cancelar</button>
+              <button onClick={saveOrderNote} style={s.addBtn}>Guardar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <nav style={navStyle}>
         <div style={s.logo}>POS SYSTEM</div>
 
@@ -290,7 +364,7 @@ export default function Admin() {
 
       <main style={mainStyle}>
         {activeTab === 'inicio' && !selectedTable ? (
-          <div style={s.grid}>
+          <div style={gridStyle}>
             {tables.map(t => {
               const hasOrders = allOrders.some(o => o.table_id === t.id)
               const isBusy = t.status === 'busy' || hasOrders
@@ -325,13 +399,19 @@ export default function Admin() {
               <div style={s.scrollArea}>
                 {orders.map(o => (
                   <div key={o.id} style={s.orderItemBox}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
                       <strong>{o.product_name}</strong>
-                      <span>${o.price}</span>
+                      <span>${Number(o.price) * Number(o.quantity || 1)}</span>
                     </div>
-                    {o.notes && <small style={{ color: '#94a3b8' }}>Obs: {o.notes}</small>}
-                    <div style={{ display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
+                    <small style={{ color: '#94a3b8' }}>Cantidad: {o.quantity || 1}</small>
+                    {o.notes && <div style={{ color: '#94a3b8', marginTop: '4px' }}>Obs: {o.notes}</div>}
+
+                    <div style={s.orderActions}>
+                      <button onClick={() => changeOrderQuantity(o, -1)} style={s.qtyBtn}>−1</button>
+                      <button onClick={() => changeOrderQuantity(o, 1)} style={s.qtyBtn}>+1</button>
                       <button onClick={() => openTransferModal(o)} style={s.btnSmall}>Transferir</button>
+                      <button onClick={() => openNoteEditor(o)} style={s.btnSmall}>Editar obs</button>
+                      <button onClick={() => deleteOrderNote(o)} style={s.btnSmall}>Borrar obs</button>
                     </div>
                   </div>
                 ))}
@@ -359,7 +439,7 @@ export default function Admin() {
                 ))}
               </div>
 
-              <div style={s.productGrid}>
+              <div style={productGridStyle}>
                 {products
                   .filter(p => selectedCategory === 'Todos' || p.category === selectedCategory)
                   .map(p => (
@@ -414,13 +494,13 @@ export default function Admin() {
                 value={newProd.category}
                 onChange={e => setNewProd({ ...newProd, category: e.target.value })}
               >
-                {categories.slice(1).map(c => <option key={c}>{c}</option>)}
+                {menuCategories.map(c => <option key={c}>{c}</option>)}
               </select>
               <button onClick={addProduct} style={s.addBtn}>Guardar Producto</button>
             </div>
 
             <div style={s.categoryGrid}>
-              {categories.slice(1).map(cat => (
+              {menuCategories.map(cat => (
                 <button
                   key={cat}
                   onClick={() => setOpenMenuCategory(openMenuCategory === cat ? null : cat)}
@@ -432,7 +512,7 @@ export default function Admin() {
             </div>
 
             <div style={{ marginTop: '16px' }}>
-              {categories.slice(1).map(cat => {
+              {menuCategories.map(cat => {
                 const categoryProducts = products.filter(p => p.category === cat)
                 const isOpen = openMenuCategory === cat
 
@@ -495,42 +575,47 @@ const s = {
   page: { display: 'flex', minHeight: '100vh', background: '#0f172a', color: '#fff', flexDirection: 'row' },
   pageMobile: { display: 'flex', minHeight: '100vh', background: '#0f172a', color: '#fff', flexDirection: 'column' },
 
-  nav: { width: '220px', background: '#1e293b', display: 'flex', flexDirection: 'column', padding: '20px', gap: '10px', minHeight: '100vh' },
-  navMobile: { width: '100%', background: '#1e293b', display: 'flex', flexDirection: 'column', padding: '10px 12px', gap: '10px', position: 'sticky', top: 0, zIndex: 20 },
+  nav: { width: '220px', background: '#1e293b', display: 'flex', flexDirection: 'column', padding: '20px', gap: '10px', minHeight: '100vh', flexShrink: 0 },
+  navMobile: { width: '100%', background: '#1e293b', display: 'flex', flexDirection: 'column', padding: '12px 14px', gap: '10px', position: 'sticky', top: 0, zIndex: 20 },
 
   logo: { fontSize: '1.5rem', fontWeight: 'bold', color: '#3b82f6', marginBottom: '6px', textAlign: 'center' },
 
   navLinks: { display: 'flex', flexDirection: 'column', gap: '8px', flex: 1 },
   navLinksMobile: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '8px', flex: 1 },
-  mobileTopBar: { display: 'flex', alignItems: 'center', gap: '8px', width: '100%' },
 
   navBtn: { padding: '12px', background: 'transparent', border: 'none', color: '#94a3b8', borderRadius: '8px', cursor: 'pointer', textAlign: 'left' },
   navBtnActive: { padding: '12px', background: '#3b82f6', border: 'none', color: '#fff', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', textAlign: 'left' },
   navBtnMobile: { padding: '10px 0', background: 'transparent', border: '1px solid #334155', color: '#cbd5e1', borderRadius: '10px', cursor: 'pointer', textAlign: 'center', minWidth: 0 },
   navBtnActiveMobile: { padding: '10px 0', background: '#3b82f6', border: '1px solid #3b82f6', color: '#fff', borderRadius: '10px', cursor: 'pointer', textAlign: 'center', minWidth: 0, fontWeight: 'bold' },
 
-  main: { flex: 1, padding: '30px', overflowY: 'auto' },
-  mainMobile: { flex: 1, padding: '14px', overflowY: 'auto' },
+  mobileTopBar: { display: 'flex', alignItems: 'center', gap: '8px', width: '100%' },
+
+  main: { flex: 1, padding: '30px', overflowY: 'auto', minWidth: 0 },
+  mainMobile: { flex: 1, padding: '14px', overflowY: 'auto', minWidth: 0 },
 
   modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000, padding: '16px' },
   modal: { background: '#1e293b', padding: '24px', borderRadius: '15px', width: '100%', maxWidth: '360px', textAlign: 'center' },
 
   grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '15px' },
+  gridMobile: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(82px, 1fr))', gap: '10px' },
+
   tableCard: { padding: '20px', borderRadius: '12px', border: '2px solid', textAlign: 'center', cursor: 'pointer' },
   tNum: { fontSize: '1.5rem', display: 'block', fontWeight: 'bold' },
 
-  responsiveOrderContainer: { display: 'grid', gridTemplateColumns: '350px 1fr', gap: '20px' },
+  responsiveOrderContainer: { display: 'grid', gridTemplateColumns: '350px 1fr', gap: '20px', alignItems: 'start' },
   responsiveOrderContainerMobile: { display: 'grid', gridTemplateColumns: '1fr', gap: '16px' },
 
   orderCard: { background: '#1e293b', padding: '15px', borderRadius: '12px' },
   scrollArea: { height: '350px', overflowY: 'auto', margin: '15px 0' },
   orderItemBox: { padding: '10px 0', borderBottom: '1px solid #334155' },
+  orderActions: { display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' },
+  qtyBtn: { background: '#475569', border: 'none', color: '#fff', padding: '8px 10px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' },
   cobrarBtn: { background: '#eab308', color: '#000', border: 'none', padding: '8px 15px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' },
 
   inputNote: { padding: '10px', borderRadius: '8px', background: '#1e293b', border: '1px solid #3b82f6', color: '#fff', marginBottom: '10px', width: '100%' },
   totalText: { fontSize: '1.4rem', fontWeight: 'bold', color: '#22c55e', textAlign: 'right' },
 
-  menuSelection: { display: 'flex', flexDirection: 'column', gap: '10px' },
+  menuSelection: { display: 'flex', flexDirection: 'column', gap: '10px', minWidth: 0 },
   categoryBar: { display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'flex-start' },
   categoryGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '12px', marginTop: '8px' },
   catBtn: { padding: '10px 18px', borderRadius: '25px', background: '#334155', color: '#fff', border: 'none', cursor: 'pointer', fontSize: '14px', width: '100%' },
@@ -539,9 +624,10 @@ const s = {
   inlineActions: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' },
 
   productGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: '12px' },
+  productGridMobile: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(105px, 1fr))', gap: '10px' },
   productBtn: { padding: '15px', background: '#1e293b', border: '1px solid #334155', color: '#fff', borderRadius: '10px', cursor: 'pointer' },
 
-  adminView: { maxWidth: '900px', margin: '0 auto' },
+  adminView: { maxWidth: '900px', margin: '0 auto', width: '100%' },
   formCard: { background: '#1e293b', padding: '20px', borderRadius: '12px', display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '20px' },
   input: { padding: '12px', borderRadius: '8px', background: '#0f172a', border: '1px solid #334155', color: '#fff', width: '100%' },
   addBtn: { background: '#22c55e', color: '#fff', padding: '12px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' },
