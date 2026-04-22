@@ -12,6 +12,10 @@ export default function Admin() {
   const [allOrders, setAllOrders] = useState([])
   const [history, setHistory] = useState([])
 
+  const [currentUser, setCurrentUser] = useState(null)
+  const [editingUsername, setEditingUsername] = useState(false)
+  const [usernameDraft, setUsernameDraft] = useState('')
+
   const [selectedTable, setSelectedTable] = useState(null)
   const [isCobrando, setIsCobrando] = useState(false)
   const [paymentMethod, setPaymentMethod] = useState('Efectivo')
@@ -35,6 +39,7 @@ export default function Admin() {
 
   const categories = ['Todos', 'Bebidas', 'Platos', 'Postres', 'Otros']
   const menuCategories = categories.slice(1)
+  const orderStatuses = ['Pendiente', 'En preparación', 'Listo']
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth <= 768)
@@ -44,11 +49,39 @@ export default function Admin() {
   }, [])
 
   useEffect(() => {
+    fetchCurrentUser()
     fetchTables()
     fetchProducts()
     fetchHistory()
     fetchAllOrders()
   }, [])
+
+  const fetchCurrentUser = async () => {
+    const { data, error } = await supabase.auth.getUser()
+    if (error) return
+
+    const user = data?.user || null
+    setCurrentUser(user)
+
+    const defaultName = user?.user_metadata?.username || user?.email?.split('@')?.[0] || 'Usuario'
+    setUsernameDraft(defaultName)
+  }
+
+  const saveUsername = async () => {
+    const cleanUsername = usernameDraft.trim()
+    if (!cleanUsername) return alert('Escribe un nombre de usuario válido')
+
+    const { data, error } = await supabase.auth.updateUser({
+      data: { username: cleanUsername }
+    })
+
+    if (error) return alert(error.message)
+
+    setCurrentUser(data?.user || currentUser)
+    setEditingUsername(false)
+  }
+
+  const displayUsername = currentUser?.user_metadata?.username || currentUser?.email?.split('@')?.[0] || 'Usuario'
 
   const fetchTables = async () => {
     const { data } = await supabase.from('tables').select('*').order('number', { ascending: true })
@@ -62,12 +95,12 @@ export default function Admin() {
 
   const fetchOrders = async (tableId) => {
     const { data } = await supabase.from('orders').select('*').eq('table_id', tableId).order('id', { ascending: true })
-    setOrders(data || [])
+    setOrders((data || []).map(o => ({ ...o, status: o.status || 'Pendiente' })))
   }
 
   const fetchAllOrders = async () => {
     const { data } = await supabase.from('orders').select('*')
-    setAllOrders(data || [])
+    setAllOrders((data || []).map(o => ({ ...o, status: o.status || 'Pendiente' })))
   }
 
   const fetchHistory = async () => {
@@ -99,7 +132,8 @@ export default function Admin() {
       product_name: product.name,
       price: Number(product.price),
       quantity: 1,
-      notes: orderNote.trim() || null
+      notes: orderNote.trim() || null,
+      status: 'Pendiente'
     }])
 
     if (error) return alert(error.message)
@@ -124,6 +158,13 @@ export default function Admin() {
 
     await syncTableStatus(order.table_id)
     await refreshTablesAndOrders(selectedTable?.id || order.table_id)
+  }
+
+  const changeOrderStatus = async (orderId, status) => {
+    const { error } = await supabase.from('orders').update({ status }).eq('id', orderId)
+    if (error) return alert(error.message)
+
+    await refreshTablesAndOrders(selectedTable?.id)
   }
 
   const openNoteEditor = (order) => {
@@ -330,8 +371,34 @@ export default function Admin() {
         </div>
       )}
 
+      {editingUsername && (
+        <div style={s.modalOverlay}>
+          <div style={s.modal}>
+            <h2>Cambiar usuario</h2>
+            <input
+              value={usernameDraft}
+              onChange={(e) => setUsernameDraft(e.target.value)}
+              style={s.input}
+              placeholder="Nuevo usuario"
+            />
+            <div style={{ display: 'flex', gap: '10px', marginTop: '20px', justifyContent: 'center' }}>
+              <button onClick={() => setEditingUsername(false)} style={s.btnSmall}>Cancelar</button>
+              <button onClick={saveUsername} style={s.addBtn}>Guardar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <nav style={navStyle}>
         <div style={s.logo}>POS SYSTEM</div>
+
+        <div style={s.userBox}>
+          <div style={s.userLabel}>Usuario</div>
+          <div style={s.userNameRow}>
+            <span style={s.userNameText}>{displayUsername}</span>
+            <button onClick={() => setEditingUsername(true)} style={s.userEditBtn}>Cambiar</button>
+          </div>
+        </div>
 
         {isMobile ? (
           <div style={s.mobileTopBar}>
@@ -404,6 +471,22 @@ export default function Admin() {
                       <span>${Number(o.price) * Number(o.quantity || 1)}</span>
                     </div>
                     <small style={{ color: '#94a3b8' }}>Cantidad: {o.quantity || 1}</small>
+
+                    <div style={s.statusRow}>
+                      <span style={{ ...s.statusPill, ...s[`status${String(o.status || 'Pendiente').replace(/\s/g, '')}`] }}>
+                        {o.status || 'Pendiente'}
+                      </span>
+                      <select
+                        value={o.status || 'Pendiente'}
+                        onChange={(e) => changeOrderStatus(o.id, e.target.value)}
+                        style={s.statusSelect}
+                      >
+                        {orderStatuses.map(st => (
+                          <option key={st} value={st}>{st}</option>
+                        ))}
+                      </select>
+                    </div>
+
                     {o.notes && <div style={{ color: '#94a3b8', marginTop: '4px' }}>Obs: {o.notes}</div>}
 
                     <div style={s.orderActions}>
@@ -579,6 +662,11 @@ const s = {
   navMobile: { width: '100%', background: '#1e293b', display: 'flex', flexDirection: 'column', padding: '12px 14px', gap: '10px', position: 'sticky', top: 0, zIndex: 20 },
 
   logo: { fontSize: '1.5rem', fontWeight: 'bold', color: '#3b82f6', marginBottom: '6px', textAlign: 'center' },
+  userBox: { background: '#0f172a', border: '1px solid #334155', borderRadius: '12px', padding: '10px 12px', marginBottom: '4px' },
+  userLabel: { fontSize: '12px', color: '#94a3b8', marginBottom: '4px' },
+  userNameRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' },
+  userNameText: { fontWeight: 'bold', color: '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  userEditBtn: { background: '#334155', border: 'none', color: '#fff', padding: '6px 10px', borderRadius: '8px', cursor: 'pointer', fontSize: '12px', flexShrink: 0 },
 
   navLinks: { display: 'flex', flexDirection: 'column', gap: '8px', flex: 1 },
   navLinksMobile: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '8px', flex: 1 },
@@ -622,6 +710,12 @@ const s = {
   catBtnActive: { padding: '10px 18px', borderRadius: '25px', background: '#3b82f6', color: '#fff', border: 'none', fontWeight: 'bold', cursor: 'pointer', width: '100%' },
   sectionCard: { background: '#1e293b', padding: '14px', borderRadius: '12px', marginTop: '14px' },
   inlineActions: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' },
+  statusRow: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '8px' },
+  statusSelect: { padding: '8px 10px', borderRadius: '8px', background: '#0f172a', border: '1px solid #334155', color: '#fff' },
+  statusPill: { padding: '6px 10px', borderRadius: '999px', fontSize: '12px', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center' },
+  statusPendiente: { background: '#334155', color: '#e2e8f0' },
+  statusEnpreparación: { background: '#7c3aed', color: '#fff' },
+  statusListo: { background: '#16a34a', color: '#fff' },
 
   productGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: '12px' },
   productGridMobile: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(105px, 1fr))', gap: '10px' },
