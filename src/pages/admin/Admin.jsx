@@ -4,38 +4,45 @@ import { useAuth } from '../../context/AuthContext'
 
 export default function Admin() {
   const { signOut } = useAuth()
+
   const [activeTab, setActiveTab] = useState('inicio')
   const [tables, setTables] = useState([])
   const [products, setProducts] = useState([])
   const [orders, setOrders] = useState([])
+  const [allOrders, setAllOrders] = useState([])
   const [history, setHistory] = useState([])
+
   const [selectedTable, setSelectedTable] = useState(null)
   const [isCobrando, setIsCobrando] = useState(false)
   const [paymentMethod, setPaymentMethod] = useState('Efectivo')
+
   const [selectedCategory, setSelectedCategory] = useState('Todos')
+  const [openMenuCategory, setOpenMenuCategory] = useState(null)
+
   const [newTableName, setNewTableName] = useState('')
   const [newProd, setNewProd] = useState({ name: '', price: '', category: 'Bebidas' })
+
   const [orderNote, setOrderNote] = useState('')
 
-  // Nuevos estados para la gestión del menú
-  const [menuSelectedCategory, setMenuSelectedCategory] = useState('Bebidas')
-  const [editingPriceId, setEditingPriceId] = useState(null)
+  const [editingProductId, setEditingProductId] = useState(null)
+  const [editedPrice, setEditedPrice] = useState('')
 
-  const categories = ['Bebidas', 'Platos', 'Postres', 'Otros']
+  const categories = ['Todos', 'Bebidas', 'Platos', 'Postres', 'Otros']
 
   useEffect(() => {
     fetchTables()
     fetchProducts()
     fetchHistory()
+    fetchAllOrders()
   }, [])
 
   const fetchTables = async () => {
-    let { data } = await supabase.from('tables').select('*').order('number', { ascending: true })
+    const { data } = await supabase.from('tables').select('*').order('number')
     setTables(data || [])
   }
 
   const fetchProducts = async () => {
-    let { data } = await supabase.from('products').select('*').order('name', { ascending: true })
+    const { data } = await supabase.from('products').select('*').order('name')
     setProducts(data || [])
   }
 
@@ -44,97 +51,118 @@ export default function Admin() {
     setOrders(data || [])
   }
 
+  const fetchAllOrders = async () => {
+    const { data } = await supabase.from('orders').select('*')
+    setAllOrders(data || [])
+  }
+
   const fetchHistory = async () => {
-    let { data } = await supabase.from('sales_history').select('*').order('created_at', { ascending: false })
+    const { data } = await supabase.from('sales_history').select('*').order('created_at', { ascending: false })
     setHistory(data || [])
   }
 
-  // --- ACCIONES DE MESA (CORREGIDAS) ---
-  const addTable = async () => {
-    if (!newTableName) return
-    await supabase.from('tables').insert([{ number: newTableName, status: 'free' }])
+  const addToOrder = async (product) => {
+    const { error } = await supabase.from('orders').insert([{
+      table_id: selectedTable.id,
+      product_name: product.name,
+      price: Number(product.price),
+      quantity: 1,
+      notes: orderNote
+    }])
+
+    if (error) return alert(error.message)
+
+    await supabase.from('tables').update({ status: 'busy' }).eq('id', selectedTable.id)
+
+    setOrderNote('')
+    await fetchOrders(selectedTable.id)
+    await fetchTables()
+    await fetchAllOrders()
+  }
+
+  const handleAddTable = async () => {
+    if (!newTableName.trim()) return
+
+    const { error } = await supabase.from('tables').insert([{ number: newTableName, status: 'free' }])
+    if (error) return alert(error.message)
+
     setNewTableName('')
     fetchTables()
   }
 
-  const deleteTable = async (id) => {
-    if (!confirm("¿Eliminar mesa permanentemente?")) return
-    await supabase.from('tables').delete().eq('id', id)
+  const handleDeleteTable = async (id) => {
+    const { error } = await supabase.from('tables').delete().eq('id', id)
+    if (error) return alert(error.message)
     fetchTables()
-  }
-
-  const addToOrder = async (product) => {
-    await supabase.from('orders').insert({
-      table_id: selectedTable.id,
-      product_name: product.name,
-      price: product.price,
-      quantity: 1,
-      status: 'pending',
-      notes: orderNote
-    })
-    
-    // Forzamos que la mesa pase a OCUPADA siempre que se añada un producto
-    await supabase.from('tables').update({ status: 'busy' }).eq('id', selectedTable.id)
-    
-    setOrderNote('')
-    fetchOrders(selectedTable.id)
-    fetchTables() // Actualizamos la vista de mesas inmediatamente
-  }
-
-  // --- ACCIONES DE MENÚ Y PRECIOS ---
-  const updateProductPrice = async (id, newPrice) => {
-    await supabase.from('products').update({ price: newPrice }).eq('id', id)
-    fetchProducts()
-  }
-
-  const deleteProduct = async (id) => {
-    if (!confirm("¿Eliminar producto?")) return
-    await supabase.from('products').delete().eq('id', id)
-    fetchProducts()
   }
 
   const addProduct = async () => {
-    if (!newProd.name || !newProd.price) return alert("Faltan datos")
     const { error } = await supabase.from('products').insert([newProd])
-    if(error) alert(error.message)
-    setNewProd({name:'', price:'', category:'Bebidas'})
+    if (error) return alert(error.message)
+
+    setNewProd({ name: '', price: '', category: 'Bebidas' })
     fetchProducts()
   }
 
+  const startEditPrice = (p) => {
+    setEditingProductId(p.id)
+    setEditedPrice(p.price)
+  }
+
+  const saveProductPrice = async (id) => {
+    const { error } = await supabase.from('products').update({ price: Number(editedPrice) }).eq('id', id)
+    if (error) return alert(error.message)
+
+    setEditingProductId(null)
+    setEditedPrice('')
+    fetchProducts()
+  }
+
+  const cancelEditPrice = () => {
+    setEditingProductId(null)
+    setEditedPrice('')
+  }
+
   const finalizePayment = async () => {
-    const total = orders.reduce((acc, o) => acc + (o.price * o.quantity), 0)
-    await supabase.from('sales_history').insert({
-        table_number: selectedTable.number,
-        total: total,
-        payment_method: paymentMethod,
-        items: orders
-    })
+    const total = orders.reduce((acc, o) => acc + o.price * o.quantity, 0)
+
+    const { error } = await supabase.from('sales_history').insert([{
+      table_number: selectedTable.number,
+      total,
+      payment_method: paymentMethod,
+      items: orders
+    }])
+
+    if (error) return alert(error.message)
+
     await supabase.from('orders').delete().eq('table_id', selectedTable.id)
     await supabase.from('tables').update({ status: 'free' }).eq('id', selectedTable.id)
+
     setIsCobrando(false)
     setSelectedTable(null)
+
     fetchTables()
+    fetchAllOrders()
     fetchHistory()
   }
 
   return (
     <div style={s.page}>
-      {/* Modal de Cobro */}
       {isCobrando && (
         <div style={s.modalOverlay}>
-            <div style={s.modal}>
-                <h2>Cobrar Mesa {selectedTable.number}</h2>
-                <p>Total: <strong>${orders.reduce((acc, o) => acc + (o.price * o.quantity), 0)}</strong></p>
-                <select style={s.input} value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
-                    <option value="Efectivo">Efectivo</option>
-                    <option value="Tarjeta">Tarjeta</option>
-                    <option value="Bizum">Bizum</option>
-                </select>
-                <div style={{display:'flex', gap:'10px', marginTop:'20px'}}>
-                    <button onClick={() => setIsCobrando(false)} style={s.btnSmall}>Cancelar</button>
-                    <button onClick={finalizePayment} style={s.addBtn}>Confirmar Pago</button>
-                </div>
+          <div style={s.modal}>
+            <h2>Cobrar Mesa {selectedTable.number}</h2>
+            <p>Total: <strong>${orders.reduce((acc, o) => acc + o.price * o.quantity, 0)}</strong></p>
+            <select style={s.input} onChange={(e) => setPaymentMethod(e.target.value)}>
+              <option>Efectivo</option>
+              <option>Tarjeta</option>
+              <option>Bizum</option>
+            </select>
+            <div style={{display:'flex', gap:'10px', marginTop:'20px'}}>
+              <button onClick={() => setIsCobrando(false)} style={s.btnSmall}>Cancelar</button>
+              <button onClick={finalizePayment} style={s.addBtn}>Confirmar Pago</button>
             </div>
+          </div>
         </div>
       )}
 
@@ -150,112 +178,132 @@ export default function Admin() {
       </nav>
 
       <main style={s.main}>
-        {/* VISTA 1: SALÓN */}
         {activeTab === 'inicio' && !selectedTable ? (
-            <div style={s.grid}>{tables.map(t => (
-                <div key={t.id} onClick={() => {setSelectedTable(t); fetchOrders(t.id)}} style={{...s.tableCard, backgroundColor: t.status === 'busy' ? '#452222' : '#1e293b', borderColor: t.status === 'busy' ? '#ef4444' : '#22c55e'}}>
+          <div style={s.grid}>
+            {tables.map(t => {
+              const hasOrders = allOrders.some(o => o.table_id === t.id)
+              const isBusy = t.status === 'busy' || hasOrders
+
+              return (
+                <div key={t.id}
+                  onClick={() => { setSelectedTable(t); fetchOrders(t.id) }}
+                  style={{...s.tableCard, backgroundColor: isBusy ? '#452222' : '#1e293b', borderColor: isBusy ? '#ef4444' : '#22c55e'}}>
                   <span style={s.tNum}>{t.number}</span>
-                  <small>{t.status === 'busy' ? 'OCUPADA' : 'LIBRE'}</small>
+                  <small>{isBusy ? 'OCUPADA' : 'LIBRE'}</small>
                 </div>
-            ))}</div>
+              )
+            })}
+          </div>
         ) : activeTab === 'inicio' && selectedTable ? (
-            <div style={s.responsiveOrderContainer}>
-              <div style={s.orderCard}>
-                <div style={{display: 'flex', justifyContent: 'space-between'}}>
-                    <button onClick={() => setSelectedTable(null)} style={s.btnSmall}>← Volver</button>
-                    <button onClick={() => setIsCobrando(true)} style={s.cobrarBtn}>COBRAR $</button>
-                </div>
-                <h3>Mesa {selectedTable.number}</h3>
-                <div style={s.scrollArea}>{orders.map(o => (
-                    <div key={o.id} style={s.orderItemBox}>
-                      <div style={{display:'flex', justifyContent:'space-between'}}><strong>{o.product_name}</strong> <span>${o.price}</span></div>
-                      {o.notes && <small style={{color: '#94a3b8'}}>Obs: {o.notes}</small>}
-                    </div>
-                ))}</div>
-                <div style={s.totalText}>Total: ${orders.reduce((acc, o) => acc + (o.price * o.quantity), 0)}</div>
+          <div style={s.responsiveOrderContainer}>
+            <div style={s.orderCard}>
+              <div style={{display:'flex', justifyContent:'space-between'}}>
+                <button onClick={() => setSelectedTable(null)} style={s.btnSmall}>← Volver</button>
+                <button onClick={() => setIsCobrando(true)} style={s.cobrarBtn}>COBRAR $</button>
               </div>
-              <div style={s.menuSelection}>
-                <input placeholder="Nota opcional..." style={s.inputNote} value={orderNote} onChange={e => setOrderNote(e.target.value)} />
-                <div style={s.categoryBar}>{categories.map(cat => <button key={cat} onClick={() => setSelectedCategory(cat)} style={selectedCategory === cat ? s.catBtnActive : s.catBtn}>{cat}</button>)}</div>
-                <div style={s.productGrid}>{products.filter(p => selectedCategory === 'Todos' || p.category === selectedCategory).map(p => (
-                    <button key={p.id} onClick={() => addToOrder(p)} style={s.productBtn}>{p.name} <br/> <small>${p.price}</small></button>
-                ))}</div>
+              <h3>Mesa {selectedTable.number}</h3>
+              <div style={s.scrollArea}>
+                {orders.map(o => (
+                  <div key={o.id} style={s.orderItemBox}>
+                    <div style={{display:'flex', justifyContent:'space-between'}}>
+                      <strong>{o.product_name}</strong>
+                      <span>${o.price}</span>
+                    </div>
+                    {o.notes && <small style={{color:'#94a3b8'}}>Obs: {o.notes}</small>}
+                  </div>
+                ))}
+              </div>
+              <div style={s.totalText}>Total: ${orders.reduce((acc, o) => acc + o.price * o.quantity, 0)}</div>
+            </div>
+
+            <div style={s.menuSelection}>
+              <input placeholder="Nota opcional..." style={s.inputNote} value={orderNote} onChange={e => setOrderNote(e.target.value)} />
+
+              <div style={s.categoryBar}>
+                {categories.map(cat => (
+                  <button key={cat} onClick={() => setSelectedCategory(cat)} style={selectedCategory === cat ? s.catBtnActive : s.catBtn}>{cat}</button>
+                ))}
+              </div>
+
+              <div style={s.productGrid}>
+                {products.filter(p => selectedCategory === 'Todos' || p.category === selectedCategory).map(p => (
+                  <button key={p.id} onClick={() => addToOrder(p)} style={s.productBtn}>
+                    {p.name}<br/><small>${p.price}</small>
+                  </button>
+                ))}
               </div>
             </div>
+          </div>
         ) : activeTab === 'mesas' ? (
-           <div style={s.adminView}>
+          <div style={s.adminView}>
             <h2>Gestión de Mesas</h2>
             <div style={s.formCard}>
               <input value={newTableName} onChange={e => setNewTableName(e.target.value)} placeholder="Ej: Mesa 1" style={s.input}/>
-              <button onClick={addTable} style={s.addBtn}>+ Agregar Mesa</button>
+              <button onClick={handleAddTable} style={s.addBtn}>+ Agregar Mesa</button>
             </div>
-            {tables.map(t => (
-                <div key={t.id} style={s.listItem}>
-                    <span>Mesa {t.number}</span>
-                    <button onClick={() => deleteTable(t.id)} style={s.delBtn}>Eliminar 🗑️</button>
-                </div>
-            ))}
-           </div>
-        ) : activeTab === 'menu' ? (
-            <div style={s.adminView}>
-                <h2>Gestión del Menú</h2>
-                <div style={s.formCard}>
-                    <input placeholder="Nombre" style={s.input} value={newProd.name} onChange={e => setNewProd({...newProd, name: e.target.value})} />
-                    <input placeholder="Precio" type="number" style={s.input} value={newProd.price} onChange={e => setNewProd({...newProd, price: e.target.value})} />
-                    <select style={s.input} value={newProd.category} onChange={e => setNewProd({...newProd, category: e.target.value})}>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
-                    <button onClick={addProduct} style={s.addBtn}>Guardar Producto</button>
-                </div>
-                
-                {/* Nueva barra de categorías en el Menú */}
-                <div style={{...s.categoryBar, marginBottom: '20px'}}>
-                  {categories.map(cat => (
-                    <button key={cat} onClick={() => setMenuSelectedCategory(cat)} style={menuSelectedCategory === cat ? s.catBtnActive : s.catBtn}>{cat}</button>
-                  ))}
-                </div>
 
-                {/* Filtro por categoría en el Menú */}
-                {products.filter(p => p.category === menuSelectedCategory).map(p => (
-                    <div key={p.id} style={s.listItem}>
+            {tables.map(t => (
+              <div key={t.id} style={s.listItem}>
+                <span>Mesa {t.number}</span>
+                <button onClick={() => handleDeleteTable(t.id)} style={s.delBtn}>Eliminar 🗑️</button>
+              </div>
+            ))}
+          </div>
+        ) : activeTab === 'menu' ? (
+          <div style={s.adminView}>
+            <h2>Gestión del Menú</h2>
+
+            <div style={s.formCard}>
+              <input placeholder="Nombre" style={s.input} value={newProd.name} onChange={e => setNewProd({...newProd, name: e.target.value})} />
+              <input placeholder="Precio" type="number" style={s.input} value={newProd.price} onChange={e => setNewProd({...newProd, price: e.target.value})} />
+              <select style={s.input} onChange={e => setNewProd({...newProd, category: e.target.value})}>
+                {categories.slice(1).map(c => <option key={c}>{c}</option>)}
+              </select>
+              <button onClick={addProduct} style={s.addBtn}>Guardar Producto</button>
+            </div>
+
+            {categories.slice(1).map(cat => (
+              <div key={cat}>
+                <button onClick={() => setOpenMenuCategory(openMenuCategory === cat ? null : cat)} style={openMenuCategory === cat ? s.catBtnActive : s.catBtn}>{cat}</button>
+
+                {openMenuCategory === cat && (
+                  <div>
+                    {products.filter(p => p.category === cat).map(p => (
+                      <div key={p.id} style={s.listItem}>
                         <span>{p.name}</span>
-                        <div style={{display: 'flex', gap: '10px', alignItems: 'center'}}>
-                            {editingPriceId === p.id ? (
-                                <input 
-                                    type="number" 
-                                    defaultValue={p.price} 
-                                    autoFocus
-                                    onBlur={(e) => {
-                                        updateProductPrice(p.id, e.target.value)
-                                        setEditingPriceId(null) // Cierra el input al terminar
-                                    }} 
-                                    style={{width: '70px', padding: '5px', borderRadius: '5px', border: '1px solid #3b82f6', background: '#0f172a', color: '#fff'}} 
-                                />
-                            ) : (
-                                <>
-                                    <strong>${p.price}</strong>
-                                    <button onClick={() => setEditingPriceId(p.id)} style={s.btnSmall}>✏️</button>
-                                </>
-                            )}
+
+                        {editingProductId === p.id ? (
+                          <>
+                            <input type="number" value={editedPrice} onChange={e => setEditedPrice(e.target.value)} style={{width:'80px', ...s.input}} />
+                            <button onClick={() => saveProductPrice(p.id)} style={s.addBtn}>Guardar</button>
+                            <button onClick={cancelEditPrice} style={s.btnSmall}>X</button>
+                          </>
+                        ) : (
+                          <>
+                            <span>${p.price}</span>
+                            <button onClick={() => startEditPrice(p)} style={s.btnSmall}>Editar</button>
                             <button onClick={() => deleteProduct(p.id)} style={s.delBtn}>🗑️</button>
-                        </div>
-                    </div>
-                ))}
-                {products.filter(p => p.category === menuSelectedCategory).length === 0 && (
-                    <p style={{textAlign: 'center', color: '#94a3b8'}}>No hay productos en esta categoría.</p>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 )}
-            </div>
+              </div>
+            ))}
+          </div>
         ) : activeTab === 'historial' ? (
-            <div style={s.adminView}>
-                <h2>Historial de Ventas</h2>
-                {history.map(h => (
-                    <div key={h.id} style={s.listItem}>
-                        <div>
-                            <strong>Mesa {h.table_number}</strong> - ${h.total} ({h.payment_method}) <br/>
-                            <small>{new Date(h.created_at).toLocaleString()}</small>
-                        </div>
-                    </div>
-                ))}
-                {history.length === 0 && <p style={{textAlign: 'center', color: '#94a3b8'}}>No hay ventas registradas aún.</p>}
-            </div>
+          <div style={s.adminView}>
+            <h2>Historial de Ventas</h2>
+            {history.map(h => (
+              <div key={h.id} style={s.listItem}>
+                <div>
+                  <strong>Mesa {h.table_number}</strong> - ${h.total} ({h.payment_method})<br/>
+                  <small>{new Date(h.created_at).toLocaleString()}</small>
+                </div>
+              </div>
+            ))}
+          </div>
         ) : null}
       </main>
     </div>
@@ -293,7 +341,7 @@ const s = {
   input: { padding: '12px', borderRadius: '8px', background: '#0f172a', border: '1px solid #334155', color: '#fff', width: '100%' },
   addBtn: { background: '#22c55e', color: '#fff', padding: '12px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' },
   listItem: { background: '#1e293b', padding: '12px', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', marginBottom: '8px', alignItems: 'center' },
-  delBtn: { color: '#ef4444', background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem' },
+  delBtn: { color: '#ef4444', background: 'none', border: 'none', cursor: 'pointer' },
   logoutBtn: { background: '#ef4444', color: '#fff', border: 'none', padding: '10px', borderRadius: '8px', cursor: 'pointer' },
   btnSmall: { background: '#334155', border: 'none', color: '#fff', padding: '8px', borderRadius: '6px', cursor: 'pointer' }
 }
